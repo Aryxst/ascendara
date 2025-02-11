@@ -277,7 +277,7 @@ ipcMain.handle("delete-game-directory", async (event, game) => {
   }
 });
 
-ipcMain.handle("stop-download", async (event, game) => {
+ipcMain.handle("stop-download", async (event, game, isPausing = false) => {
   try {
     // Kill any running downloader processes for this game
     const processNames = ["AscendaraDownloader.exe", "AscendaraGofileHelper.exe"];
@@ -286,6 +286,8 @@ ipcMain.handle("stop-download", async (event, game) => {
       const killProcess = spawn("taskkill", ["/f", "/im", processName]);
       await new Promise(resolve => killProcess.on("close", resolve));
     }
+
+    if (isPausing) return true;
 
     // Wait for processes to fully terminate and release file handles
     await new Promise(resolve => setTimeout(resolve, 2000));
@@ -401,9 +403,20 @@ function sanitizeDirectoryName(name) {
 // Download the file
 ipcMain.handle(
   "download-file",
-  async (event, link, game, online, dlc, isVr, version, imgID, size) => {
+  async (
+    event,
+    link,
+    game,
+    online,
+    dlc,
+    isVr,
+    version,
+    imgID,
+    size,
+    downloadedSize = 0
+  ) => {
     console.log(
-      `Downloading file: ${link}, game: ${game}, online: ${online}, dlc: ${dlc}, isVr: ${isVr}, version: ${version}, size: ${size}`
+      `Downloading file: ${link}, game: ${game}, online: ${online}, dlc: ${dlc}, isVr: ${isVr}, version: ${version}, size: ${size}, downloadedSize: ${downloadedSize}`
     );
     const filePath = path.join(app.getPath("userData"), "ascendarasettings.json");
     try {
@@ -457,6 +470,7 @@ ipcMain.handle(
                 version,
                 size,
                 gamesDirectory,
+                downloadedSize,
               ];
             } else {
               executablePath = isDev

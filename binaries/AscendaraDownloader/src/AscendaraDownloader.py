@@ -154,9 +154,10 @@ class DownloadChunk:
         self.downloaded = 0
 
 class DownloadManager:
-    def __init__(self, url, total_size, num_threads=None):
+    def __init__(self, url, total_size, downloaded_size=None, num_threads=None):
         self.url = url
         self.total_size = total_size
+        self.downloaded_size = downloaded_size if downloaded_size is not None else 0
         
         # Read thread count from settings
         try:
@@ -169,33 +170,36 @@ class DownloadManager:
                 self.num_threads = 4
         except Exception:
             self.num_threads = 4
-            
+        
         self.chunks = []
-        self.downloaded_size = 0
         self.lock = threading.Lock()
         
     def split_chunks(self):
-        chunk_size = self.total_size // self.num_threads
+        remaining_size = self.total_size - self.downloaded_size
+        chunk_size = remaining_size // self.num_threads
+        
         for i in range(self.num_threads):
-            start = i * chunk_size
+            start = self.downloaded_size + (i * chunk_size)
             end = start + chunk_size - 1 if i < self.num_threads - 1 else self.total_size - 1
             self.chunks.append(DownloadChunk(start, end, self.url))
-            
-    def download_chunk(self, chunk, session, callback=None):
+    
+    def download_chunk(self, chunk, session, file_path, callback=None):
         headers = {'Range': f'bytes={chunk.start}-{chunk.end}'}
         response = session.get(chunk.url, headers=headers, stream=True)
         
-        for data in response.iter_content(chunk_size=1024*1024):
-            if not data:
-                break
-            chunk.data += data
-            chunk.downloaded += len(data)
-            with self.lock:
-                self.downloaded_size += len(data)
-                if callback:
-                    callback(len(data))
+        with open(file_path, "r+b") as f:
+            f.seek(chunk.start)
+            for data in response.iter_content(chunk_size=1024*1024):
+                if not data:
+                    break
+                f.write(data)
+                chunk.downloaded += len(data)
+                with self.lock:
+                    self.downloaded_size += len(data)
+                    if callback:
+                        callback(len(data))
 
-def download_file(link, game, online, dlc, isVr, version, size, download_dir):
+def download_file(link, game, online, dlc, isVr, version, size, download_dir, downloaded_size=0):
     game = sanitize_folder_name(game)
     download_path = os.path.join(download_dir, game)
     os.makedirs(download_path, exist_ok=True)
@@ -255,7 +259,7 @@ def download_file(link, game, online, dlc, isVr, version, size, download_dir):
             archive_file_path = os.path.join(download_path, f"{game}.{archive_ext}")
             
             # Initialize download manager
-            manager = DownloadManager(link, total_size)
+            manager = DownloadManager(link, total_size, downloaded_size)
             
             game_info["downloadingData"]["downloading"] = True
             start_time = time.time()
@@ -300,7 +304,7 @@ def download_file(link, game, online, dlc, isVr, version, size, download_dir):
                 with ThreadPoolExecutor(max_workers=manager.num_threads) as executor:
                     futures = []
                     for chunk in manager.chunks:
-                        future = executor.submit(manager.download_chunk, chunk, session, update_progress)
+                        future = executor.submit(manager.download_chunk, chunk, session, archive_file_path, update_progress)
                         futures.append(future)
                     
                     # Wait for all downloads to complete
@@ -357,7 +361,6 @@ def download_file(link, game, online, dlc, isVr, version, size, download_dir):
             del game_info["downloadingData"]
             safe_write_json(game_info_path, game_info)
 
-
         except Exception as e:
             handleerror(game_info, game_info_path, e)
             raise e
@@ -384,7 +387,8 @@ def main():
     parser.add_argument("version", help="Version of the game")
     parser.add_argument("size", help="Size of the file (ex: 12 GB, 439 MB)")
     parser.add_argument("download_dir", help="Directory to save the downloaded files")
-
+    parser.add_argument("downloaded_size", type=int, help="Size of the downloaded file in bytes")
+    
     try:
         if len(sys.argv) == 1:  # No arguments provided
             launch_crash_reporter(1, "No arguments provided. Please provide all required arguments.")
@@ -392,7 +396,7 @@ def main():
             sys.exit(1)
             
         args = parser.parse_args()
-        download_file(args.link, args.game, args.online, args.dlc, args.isVr, args.version, args.size, args.download_dir)
+        download_file(args.link, args.game, args.online, args.dlc, args.isVr, args.version, args.size, args.download_dir, args.downloaded_size)
     except (argparse.ArgumentError, SystemExit) as e:
         error_msg = "Invalid or missing arguments. Please provide all required arguments."
         launch_crash_reporter(1, error_msg)

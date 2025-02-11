@@ -44,6 +44,7 @@ const Downloads = () => {
   const [totalSpeed, setTotalSpeed] = useState("0.00 MB/s");
   const [activeDownloads, setActiveDownloads] = useState(0);
   const [stoppingDownloads, setStoppingDownloads] = useState(new Set());
+  const [pausedDownloads, setPausedDownloads] = useState(new Set());
   const [showFirstTimeAlert, setShowFirstTimeAlert] = useState(false);
   const { t } = useLanguage();
 
@@ -62,7 +63,7 @@ const Downloads = () => {
           );
         });
 
-        // Update error details for games with errors
+        // Log error details for games with errors
         downloading.forEach(game => {
           if (game.downloadingData?.error) {
             console.log(`Error for game ${game.game}:`, game.downloadingData.message);
@@ -119,20 +120,62 @@ const Downloads = () => {
   }, [downloadingGames]);
 
   useEffect(() => {
-    if (downloadingGames.length === 0) {
-      document.body.style.overflow = "hidden";
-    } else {
-      document.body.style.overflow = "auto";
-    }
-
+    document.body.style.overflow = downloadingGames.length === 0 ? "hidden" : "auto";
     return () => {
       document.body.style.overflow = "auto";
     };
   }, [downloadingGames.length]);
 
-  const handleStopDownload = async game => {
+  // Function to pause a download
+  const handlePauseDownload = async game => {
     setStoppingDownloads(prev => new Set([...prev, game.game]));
-    await window.electron.stopDownload(game);
+    try {
+      await window.electron.pauseDownload(game, true);
+      setPausedDownloads(prev => {
+        const newSet = new Set(prev);
+        newSet.add(game.game);
+        return newSet;
+      });
+    } catch (error) {
+      console.error("Error pausing download:", error);
+    } finally {
+      setStoppingDownloads(prev => {
+        const newSet = new Set(prev);
+        newSet.delete(game.game);
+        return newSet;
+      });
+    }
+  };
+
+  // Function to resume a download using window.electron.downloadFile
+  const handleResumeDownload = async game => {
+    setStoppingDownloads(prev => new Set([...prev, game.game]));
+    try {
+      await window.electron.downloadFile(
+        game.downloadUrl, // link
+        game.game, // game (name)
+        game.online, // online
+        game.dlc, // dlc
+        game.isVr, // isVr
+        game.version, // version
+        game.imgID, // imgID
+        game.size, // size
+        game.downloadedSize || 0 // downloadedSize (default to 0 if not set)
+      );
+      setPausedDownloads(prev => {
+        const newSet = new Set(prev);
+        newSet.delete(game.game);
+        return newSet;
+      });
+    } catch (error) {
+      console.error("Error resuming download:", error);
+    } finally {
+      setStoppingDownloads(prev => {
+        const newSet = new Set(prev);
+        newSet.delete(game.game);
+        return newSet;
+      });
+    }
   };
 
   const handleRetryDownload = game => {
@@ -163,7 +206,9 @@ const Downloads = () => {
           <Separator orientation="vertical" className="h-8" />
           <p className="text-muted-foreground">
             {activeDownloads > 0
-              ? `${activeDownloads} ${t("downloads.activeDownload")}${activeDownloads === 1 ? "" : "s"} • ${totalSpeed}`
+              ? `${activeDownloads} ${t("downloads.activeDownload")}${
+                  activeDownloads === 1 ? "" : "s"
+                } • ${totalSpeed}`
               : t("downloads.noDownloads")}
           </p>
         </div>
@@ -208,10 +253,13 @@ const Downloads = () => {
             <DownloadCard
               key={game.game}
               game={game}
-              onStop={() => handleStopDownload(game)}
+              // When not paused, allow pausing; when paused, allow resuming.
+              onPause={() => handlePauseDownload(game)}
+              onResume={() => handleResumeDownload(game)}
               onRetry={() => handleRetryDownload(game)}
               onOpenFolder={() => handleOpenFolder(game)}
               isStopping={stoppingDownloads.has(game.game)}
+              isPaused={pausedDownloads.has(game.game)}
             />
           ))
         )}
@@ -241,7 +289,15 @@ const Downloads = () => {
   );
 };
 
-const DownloadCard = ({ game, onStop, onRetry, onOpenFolder, isStopping }) => {
+const DownloadCard = ({
+  game,
+  onPause,
+  onResume,
+  onRetry,
+  onOpenFolder,
+  isStopping,
+  isPaused,
+}) => {
   const [isReporting, setIsReporting] = useState(false);
   const { t } = useLanguage();
 
@@ -400,7 +456,7 @@ const DownloadCard = ({ game, onStop, onRetry, onOpenFolder, isStopping }) => {
           <DropdownMenuContent align="end">
             {hasError ? (
               <>
-                <DropdownMenuItem onClick={() => onRetry(game)}>
+                <DropdownMenuItem onClick={() => onRetry()}>
                   <RefreshCcw className="mr-2 h-4 w-4" />
                   {t("downloads.actions.retryDownload")}
                 </DropdownMenuItem>
@@ -410,13 +466,22 @@ const DownloadCard = ({ game, onStop, onRetry, onOpenFolder, isStopping }) => {
                 </DropdownMenuItem>
               </>
             ) : (
-              <DropdownMenuItem onClick={() => onStop(game)}>
-                <StopCircle className="mr-2 h-4 w-4" />
-                {t("downloads.actions.stopDownload")}
-              </DropdownMenuItem>
+              <>
+                {isPaused ? (
+                  <DropdownMenuItem onClick={() => onResume()}>
+                    <Download className="mr-2 h-4 w-4" />
+                    {t("downloads.actions.resumeDownload")}
+                  </DropdownMenuItem>
+                ) : (
+                  <DropdownMenuItem onClick={() => onPause()}>
+                    <StopCircle className="mr-2 h-4 w-4" />
+                    {t("downloads.actions.pauseDownload")}
+                  </DropdownMenuItem>
+                )}
+              </>
             )}
             {!isDownloading && (
-              <DropdownMenuItem onClick={() => onOpenFolder(game)}>
+              <DropdownMenuItem onClick={() => onOpenFolder()}>
                 <FolderOpen className="mr-2 h-4 w-4" />
                 {t("downloads.actions.openFolder")}
               </DropdownMenuItem>
@@ -503,7 +568,7 @@ const DownloadCard = ({ game, onStop, onRetry, onOpenFolder, isStopping }) => {
                   <Button
                     variant="outline"
                     size="sm"
-                    onClick={onRetry}
+                    onClick={() => onRetry()}
                     className="border-destructive/30 hover:bg-destructive/10"
                   >
                     <RefreshCcw className="mr-2 h-4 w-4" />
